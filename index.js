@@ -202,11 +202,7 @@ const httpServer = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: "Session not found" }));
       return;
     }
-    let body = "";
-    req.on("data", (chunk) => (body += chunk));
-    req.on("end", async () => {
-      await transport.handlePostMessage(req, res, body);
-    });
+    await transport.handlePostMessage(req, res);
   } else {
     res.writeHead(404);
     res.end();
