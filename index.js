@@ -172,8 +172,8 @@ const transports = {};
 const httpServer = http.createServer(async (req, res) => {
   // Auth check on all routes except health
   if (req.url !== "/health") {
-    const auth = req.headers.authorization;
-    if (!auth || auth !== `Bearer ${MCP_AUTH_TOKEN}`) {
+    const { searchParams } = new URL(req.url, `http://localhost:${PORT}`);
+    if (searchParams.get("token") !== MCP_AUTH_TOKEN) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Unauthorized" }));
       return;
