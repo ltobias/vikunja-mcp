@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  isInitializeRequest,
 } from "@modelcontextprotocol/sdk/types.js";
 import http from "http";
+import { randomUUID } from "crypto";
 
 const VIKUNJA_URL = process.env.VIKUNJA_URL || "http://localhost:3456";
 const VIKUNJA_TOKEN = process.env.VIKUNJA_TOKEN;
@@ -167,45 +169,97 @@ function createMcpServer() {
   return server;
 }
 
-const transports = {};
+// sessionId -> StreamableHTTPServerTransport
+const sessions = new Map();
+
+async function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let raw = "";
+    req.on("data", (chunk) => (raw += chunk));
+    req.on("end", () => {
+      try { resolve(JSON.parse(raw)); }
+      catch (e) { reject(e); }
+    });
+  });
+}
 
 const httpServer = http.createServer(async (req, res) => {
-  // Auth check on all routes except health
-  if (req.url !== "/health") {
-    const { searchParams } = new URL(req.url, `http://localhost:${PORT}`);
-    if (searchParams.get("token") !== MCP_AUTH_TOKEN) {
-      res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Unauthorized" }));
-      return;
-    }
-  }
+  const url = new URL(req.url, `http://localhost:${PORT}`);
 
-  if (req.method === "GET" && req.url === "/health") {
+  if (url.pathname === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "ok" }));
-  } else if (req.method === "GET" && req.url === "/sse") {
-    const transport = new SSEServerTransport("/messages", res);
-    const server = createMcpServer();
-    transports[transport.sessionId] = transport;
-    await server.connect(transport);
-    console.log(`SSE connected: ${transport.sessionId}`);
-    req.on("close", () => {
-      delete transports[transport.sessionId];
-      console.log(`SSE disconnected: ${transport.sessionId}`);
-    });
-  } else if (req.method === "POST" && req.url.startsWith("/messages")) {
-    const url = new URL(req.url, `http://localhost:${PORT}`);
-    const sessionId = url.searchParams.get("sessionId");
-    const transport = transports[sessionId];
-    if (!transport) {
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Session not found" }));
-      return;
-    }
-    await transport.handlePostMessage(req, res);
-  } else {
+    return;
+  }
+
+  if (url.searchParams.get("token") !== MCP_AUTH_TOKEN) {
+    res.writeHead(401, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Unauthorized" }));
+    return;
+  }
+
+  if (url.pathname !== "/mcp") {
     res.writeHead(404);
     res.end();
+    return;
+  }
+
+  try {
+    if (req.method === "POST") {
+      const body = await readBody(req);
+      const sessionId = req.headers["mcp-session-id"];
+      let transport = sessions.get(sessionId);
+
+      if (!transport) {
+        if (!isInitializeRequest(body)) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Expected initialize request" }));
+          return;
+        }
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (id) => {
+            sessions.set(id, transport);
+            console.log(`Session created: ${id}`);
+          },
+        });
+        transport.onclose = () => {
+          for (const [id, t] of sessions) {
+            if (t === transport) { sessions.delete(id); console.log(`Session closed: ${id}`); }
+          }
+        };
+        const server = createMcpServer();
+        await server.connect(transport);
+      }
+
+      await transport.handleRequest(req, res, body);
+
+    } else if (req.method === "GET") {
+      const sessionId = req.headers["mcp-session-id"];
+      const transport = sessions.get(sessionId);
+      if (!transport) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Session not found" }));
+        return;
+      }
+      await transport.handleRequest(req, res);
+
+    } else if (req.method === "DELETE") {
+      const sessionId = req.headers["mcp-session-id"];
+      sessions.delete(sessionId);
+      res.writeHead(200);
+      res.end();
+
+    } else {
+      res.writeHead(405);
+      res.end();
+    }
+  } catch (error) {
+    console.error("Request error:", error);
+    if (!res.headersSent) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Internal server error" }));
+    }
   }
 });
 
