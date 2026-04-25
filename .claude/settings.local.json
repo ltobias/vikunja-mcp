@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find \"\\\\\\\\narta\\\\documents\\\\dev\\\\vikunja-mcp\" -type f -name \"*\")",
+      "Bash(cd \"\\\\\\\\narta\\\\documents\\\\dev\\\\vikunja-mcp\")",
+      "Read(///narta/documents/narta/documents/dev/**)",
+      "Bash(ls -la \"\\\\\\\\narta\\\\documents\\\\dev\\\\vikunja-mcp\")",
+      "Bash(gh auth *)",
+      "Bash(gh api *)"
+    ]
+  }
+}
